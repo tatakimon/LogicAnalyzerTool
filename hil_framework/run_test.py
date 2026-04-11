@@ -23,6 +23,7 @@ from capture import LogicAnalyzerCapture
 from decoder import UARTDecoder
 from validator import TestValidator
 from hardware import BoardHardware
+from timing import analyze_timing
 
 
 def main():
@@ -165,6 +166,27 @@ def main():
     print(f"\n  HIL Result: {'PASS' if result.passed else 'FAIL'}")
     print(f"  Channel: D{args.channel} @ {result.sample_rate_hz/1e6:.0f}MHz")
     print(f"  Decoded: {len(primary)} bytes")
+
+    # Step 6: Hardware Timing Analysis
+    if result.filepath and os.path.exists(result.filepath):
+        print(f"\n[6] Hardware Timing Analysis")
+        print(f"    Analyzing: {os.path.basename(result.filepath)}")
+        print(f"    Channel: D{args.channel} @ {args.baud} baud")
+        faults, timing_report = analyze_timing(
+            sr_file=result.filepath,
+            channel=args.channel,
+            baud=args.baud,
+            tolerance=0.05,
+            min_gap_us=20.0,
+            verbose=False,
+        )
+        if faults < 0:
+            print(f"    {y('WARNING:')} Timing analysis unavailable (sigrok-cli error)")
+        elif faults == 0:
+            print(f"    {g('✓ PASS:')} 0 physical timing violations found")
+        else:
+            print(f"    {r('✗ FAIL:')} {faults} physical timing violation(s) found")
+
     print("=" * 60)
 
     sys.exit(0 if result.passed else 1)

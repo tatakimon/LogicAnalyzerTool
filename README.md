@@ -85,6 +85,7 @@ Located in `hil_framework/`:
 | `hardware.py` | Board flashing + VCP serial |
 | `dashboard.py` | Terminal UI dashboard |
 | `run_test.py` | CLI test runner |
+| `timing.py` | Hardware timing analysis via VCD parsing |
 
 ### Direct Python Usage
 
@@ -107,6 +108,41 @@ test_result.print_report()
 ```bash
 python3 hil_framework/decoder.py
 # Tests: 1MHz, 10MHz, 12MHz — all 256 byte values round-trip correctly
+```
+
+### Hardware Timing Analysis
+
+Analyzes physical-layer UART timing from the VCD export of a capture file.
+Detects bit width deviations beyond the configurable tolerance (default: 5%).
+
+```bash
+# Analyze timing on a .sr capture file
+python3 hil_framework/timing.py capture.sr --channel 1
+
+# Stricter tolerance
+python3 hil_framework/timing.py capture.sr --tolerance 0.03
+```
+
+Key checks:
+- Single bit periods vs. ideal 8.68 µs (115200 baud)
+- Consecutive same-state bits (e.g. `0xFF` stop+data bits = 2×, 3×, … multiples)
+- Inter-packet idle gaps (> byte period) — flagged but not faulted
+
+Result: **PASS** with 0 violations means all edge transitions are within ±5% of the ideal bit time.
+
+```
+  Pulse width histogram:
+       1-bit (8.68us) │ ███████████████████████████████  (297)
+      2-bit (17.36us) │ ██████████                       (86)   ← consecutive 1-bits
+      3-bit (26.04us) │ █                                (13)
+      5-bit (43.40us) │ █                                (15)
+
+  ✓ PASS  0 physical timing violations found
+```
+
+Timing is automatically run as Step 6 in `run_test.py`, printing:
+```
+  ✓ PASS:  0 physical timing violations found
 ```
 
 ---
