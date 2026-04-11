@@ -1,0 +1,38 @@
+# Build output
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.十字
+*.axf
+
+# CubeIDE
+Debug/
+Release/
+*.project
+*.cproject
+.settings/
+
+# CubeMX
+*.mxproject
+
+# sigrok capture files
+*.sr
+*.sr.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.env
+.venv/
+
+# Misc
+*.swp
+*.swo
+*~
+.DS_Store

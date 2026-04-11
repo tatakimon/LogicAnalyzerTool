@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 uart_decoder.py)",
+      "Bash(python3 auto_verify.py)",
+      "Bash(/run/usbipd-win/usbip --help)",
+      "Read(//sys/bus/usb/devices/2-1/**)",
+      "Read(//sys/bus/usb/drivers/usb/**)",
+      "Read(//sys/devices/platform/vhci_hcd.0/usb1/1-2/**)",
+      "Bash(python3 -c ':*)",
+      "Bash(st-flash write:*)",
+      "Bash(ls -la /dev/ttyACM*)",
+      "Bash(st-flash --help)",
+      "Bash(st-flash reset:*)",
+      "Bash(sigrok-cli -d fx2lafw:conn=1.9 --show)",
+      "Bash(xxd)",
+      "Bash(python3 decoder.py)",
+      "Bash(python3 hil_framework/run_test.py --duration 3 --channel 1 --patterns)",
+      "Bash(python3 hil_framework/run_test.py --duration 2 --channel 1 --patterns)",
+      "Bash(ls -la /tmp/la_capture* /tmp/quick*)",
+      "Bash(pkill -f sigrok-cli)",
+      "Bash(python3 -u hil_framework/run_test.py --duration 2 --channel 1 --patterns)",
+      "Bash(python3 -u -c ':*)",
+      "Bash(python3 hil_framework/dashboard.py --duration 3 --channel 1)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('hil_framework/dashboard.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('hil_framework/dashboard.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 hil_framework/dashboard.py --duration 2 --channel 1)",
+      "Bash(git init:*)",
+      "Bash(git config:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
