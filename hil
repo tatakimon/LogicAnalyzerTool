@@ -1,0 +1,58 @@
+#!/bin/bash
+# hil — Launch the HIL Hardware Co-Pilot
+#
+#   cd /path/to/logic_analyzer
+#   ./hil                    # interactive TUI
+#
+# Credentials are loaded from ~/.hil_env (created by running this once from
+# a VSCode terminal where the Claude Code extension has authenticated).
+# To reset credentials: edit ~/.hil_env
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HIL_FRAMEWORK="$SCRIPT_DIR/hil_framework"
+COPILOT="$HIL_FRAMEWORK/copilot.py"
+
+# Load credentials from ~/.hil_env if it exists
+if [ -f "$HOME/.hil_env" ]; then
+    set -a
+    source "$HOME/.hil_env"
+    set +a
+fi
+
+# Verify dependencies
+if [ ! -f "$COPILOT" ]; then
+    echo "ERROR: copilot.py not found at $COPILOT"
+    exit 1
+fi
+
+# Check for API key
+if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
+    echo "ERROR: No API key found."
+    echo ""
+    echo "  First-time setup (run this once from a VSCode terminal):"
+    echo ""
+    echo "    In VSCode, open a terminal and run:"
+    echo "      echo 'source ~/.hil_env' >> ~/.bashrc"
+    echo "      echo 'export ANTHROPIC_AUTH_TOKEN='\\$ANTHROPIC_AUTH_TOKEN >> ~/.bashrc"
+    echo "      echo 'export ANTHROPIC_BASE_URL='\\$ANTHROPIC_BASE_URL >> ~/.bashrc"
+    echo ""
+    echo "  Or copy your ANTHROPIC_AUTH_TOKEN from the MiniMax console"
+    echo "  and add it to ~/.hil_env manually:"
+    echo "    export ANTHROPIC_AUTH_TOKEN=\"your-token-here\""
+    echo "    export ANTHROPIC_BASE_URL=\"https://api.minimax.io/anthropic\""
+    exit 1
+fi
+
+echo ""
+echo "  HIL Hardware Co-Pilot"
+echo "  ─────────────────────────────────────────"
+echo "  Workspace : hil_workspace/"
+echo "  Baseline  : active_trial_1/ (untouched)"
+echo "  API key   : ${ANTHROPIC_API_KEY:+set} ${ANTHROPIC_AUTH_TOKEN:+set}"
+echo "  Endpoint  : ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+echo "  ─────────────────────────────────────────"
+echo ""
+
+exec python3 "$COPILOT" "$@"

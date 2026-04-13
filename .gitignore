@@ -31,6 +31,9 @@ __pycache__/
 .env
 .venv/
 
+# HIL workspace (copilot working copy — never commit)
+hil_workspace/
+
 # Misc
 *.swp
 *.swo
