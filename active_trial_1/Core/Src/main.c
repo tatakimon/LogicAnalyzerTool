@@ -101,7 +101,9 @@ static void MX_UCPD1_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
+
 /* Pattern senders are inline in main loop now */
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
