@@ -73,6 +73,15 @@ class Pulse:
 
 
 @dataclass
+class ByteTiming:
+    """Timing info for a single decoded byte."""
+    byte_index: int       # position in the decoded stream
+    fault_count: int      # how many timing faults fall within this byte
+    fault_pct: float      # worst deviation as % of ideal bit
+    faulty_bits: List[int] = field(default_factory=list)  # which bit positions are bad
+
+
+@dataclass
 class TimingReport:
     """Full timing analysis result."""
     channel: str
@@ -89,6 +98,8 @@ class TimingReport:
     std_us: float
     faults: List[Tuple[int, str, float]] = field(default_factory=list)
     pulses: List[Pulse] = field(default_factory=list)
+    edges: List[Edge] = field(default_factory=list)
+    baud_mismatch_pct: float = 0.0  # how much actual baud deviates from declared
 
 
 # ─── VCD Parser ────────────────────────────────────────────────────
@@ -180,6 +191,10 @@ class VCDEdgeParser:
 
         return edges
 
+    def get_edges(self) -> List[Edge]:
+        """Return all parsed edges regardless of channel filter."""
+        return list(self.edges)
+
 
 def export_vcd(sr_file: str, channel: Optional[int] = None) -> str:
     """
@@ -208,6 +223,7 @@ def analyze_pulses(
     ideal_us: float,
     tolerance: float,
     min_gap_us: float,
+    baud: int = UART_BAUD,
 ) -> TimingReport:
     """
     Analyze edge-to-edge transitions for timing faults.
@@ -306,18 +322,87 @@ def analyze_pulses(
 
         pulses.append(pulse)
 
-    # Deduplicate faults by rounded interval
-    unique_faults = []
-    seen = set()
-    for idx, dt_us, deviation_us in faults:
-        num_bits = dt_us / ideal_us
-        nearest = round(num_bits)
-        key = f"{nearest}:{dt_us:.1f}"
-        if key not in seen:
-            seen.add(key)
-            # deviation_us is the absolute error in microseconds
-            deviation_pct = deviation_us / ideal_us * 100
-            unique_faults.append((idx, f"{dt_us:.2f}us ({nearest} bits, {deviation_us:+.4f}us off ideal, {deviation_pct:+.1f}%)", dt_us))
+    # Check if observed signal matches the declared baud rate.
+    # Focus on SINGLE-bit intervals only (dt <= gap_threshold).
+    # Multi-bit intervals compose N×bit-width and distort the median.
+    if len(half_periods) >= 5:
+        single_bit_intervals = [dt for dt in half_periods if dt <= gap_threshold]
+        if len(single_bit_intervals) >= 3:
+            sorted_sbi = sorted(single_bit_intervals)
+            median_sbi = sorted_sbi[len(sorted_sbi) // 2]
+            implied_baud = 1_000_000.0 / median_sbi
+            baud_dev_pct = (implied_baud - baud) / baud * 100
+            # Flag if baud rate mismatch exceeds 2% (detects 6.9% bug reliably)
+            if abs(baud_dev_pct) > 2.0:
+                # Deduce the actual baud and recompute thresholds
+                actual_baud = int(round(implied_baud / 100) * 100)
+                actual_ideal = 1_000_000.0 / actual_baud
+                actual_lo = actual_ideal * (1 - tolerance)
+                actual_hi = actual_ideal * (1 + tolerance)
+                actual_gap = actual_ideal * 1.5
+                actual_byte = actual_ideal * 10
+
+                # Re-check all intervals against actual baud
+                for dt in half_periods:
+                    if dt > actual_byte:
+                        continue
+                    if dt > actual_gap:
+                        nb = dt / actual_ideal
+                        nearest = round(nb)
+                        dev = abs(dt - nearest * actual_ideal)
+                        if dev > tolerance * actual_ideal:
+                            faults.append((0, dt, dev))
+                    elif not (actual_lo <= dt <= actual_hi):
+                        faults.append((0, dt, abs(dt - actual_ideal)))
+
+                # Deduplicate using actual baud
+                unique_faults = []
+                seen = set()
+                for idx, dt_us, deviation_us in faults:
+                    num_bits = dt_us / actual_ideal
+                    nearest = round(num_bits)
+                    key = f"{nearest}:{dt_us:.1f}"
+                    if key not in seen:
+                        seen.add(key)
+                        deviation_pct = deviation_us / actual_ideal * 100
+                        unique_faults.append((idx, f"{dt_us:.2f}us ({nearest} bits, {deviation_us:+.4f}us off ideal, {deviation_pct:+.1f}%)", dt_us))
+            else:
+                baud_dev_pct = 0.0
+                # No baud mismatch — use original deduplication
+                unique_faults = []
+                seen = set()
+                for idx, dt_us, deviation_us in faults:
+                    num_bits = dt_us / ideal_us
+                    nearest = round(num_bits)
+                    key = f"{nearest}:{dt_us:.1f}"
+                    if key not in seen:
+                        seen.add(key)
+                        deviation_pct = deviation_us / ideal_us * 100
+                        unique_faults.append((idx, f"{dt_us:.2f}us ({nearest} bits, {deviation_us:+.4f}us off ideal, {deviation_pct:+.1f}%)", dt_us))
+        else:
+            baud_dev_pct = 0.0
+            unique_faults = []
+            seen = set()
+            for idx, dt_us, deviation_us in faults:
+                num_bits = dt_us / ideal_us
+                nearest = round(num_bits)
+                key = f"{nearest}:{dt_us:.1f}"
+                if key not in seen:
+                    seen.add(key)
+                    deviation_pct = deviation_us / ideal_us * 100
+                    unique_faults.append((idx, f"{dt_us:.2f}us ({nearest} bits, {deviation_us:+.4f}us off ideal, {deviation_pct:+.1f}%)", dt_us))
+    else:
+        baud_dev_pct = 0.0
+        unique_faults = []
+        seen = set()
+        for idx, dt_us, deviation_us in faults:
+            num_bits = dt_us / ideal_us
+            nearest = round(num_bits)
+            key = f"{nearest}:{dt_us:.1f}"
+            if key not in seen:
+                seen.add(key)
+                deviation_pct = deviation_us / ideal_us * 100
+                unique_faults.append((idx, f"{dt_us:.2f}us ({nearest} bits, {deviation_us:+.4f}us off ideal, {deviation_pct:+.1f}%)", dt_us))
 
     return TimingReport(
         channel='D0',
@@ -334,6 +419,7 @@ def analyze_pulses(
         std_us=std_us,
         faults=unique_faults,
         pulses=pulses,
+        baud_mismatch_pct=baud_dev_pct,
     )
 
 
@@ -527,8 +613,9 @@ def analyze_timing(
         )
 
     # ── Step 3: Analyze pulses ───────────────────────────────────
-    report = analyze_pulses(edges, ideal_us, tolerance, min_gap_us)
+    report = analyze_pulses(edges, ideal_us, tolerance, min_gap_us, baud=baud)
     report.channel = channel_name
+    report.edges = edges  # expose for downstream use
 
     if verbose:
         print(f"  {b('║')}  {c('Edges found:')} {len(edges):,}   "
@@ -547,6 +634,10 @@ def analyze_timing(
             dev_str = f"{'+' if deviation_pct >= 0 else ''}{deviation_pct:.2f}%"
             dev_color = g(dev_str) if abs(deviation_pct) < 1 else y(dev_str) if abs(deviation_pct) < 5 else r(dev_str)
             print(f"  {b('║')}    {c('Mean vs ideal:')} {dev_color} ({ideal_us:.4f} us ideal)")
+            if abs(report.baud_mismatch_pct) > tolerance * 100:
+                implied_baud = round((1_000_000.0 / report.mean_us) / 100) * 100
+                mismatch_str = y(f"⚠ BAUD MISMATCH: signal implies {implied_baud} baud (declared {baud}, dev={report.baud_mismatch_pct:+.1f}%)")
+                print(f"  {b('║')}    {mismatch_str}")
             print(f"  {b('╠' + '═' * 78 + '╣')}")
 
         # ── Step 5: Timing Ruler ─────────────────────────────────
@@ -601,6 +692,214 @@ def analyze_timing(
         print(f"  {b('╚' + '═' * 78 + '╝')}")
 
     return report.fault_count, report
+
+
+# ─── Baud Rate Estimation from Raw Samples ─────────────────────────
+def estimate_baud_from_samples(
+    channel_samples: list,
+    sample_rate_hz: int,
+    declared_baud: int = 115200,
+) -> Tuple[float, float]:
+    """
+    Estimate actual baud rate from raw sample transitions.
+
+    Returns:
+        Tuple of (estimated_baud, deviation_pct)
+        deviation_pct > 2 means declared baud doesn't match observed.
+    Uses sample-index counting — no VCD quantization errors.
+    """
+    if not channel_samples or len(channel_samples) < 1000:
+        return declared_baud, 0.0
+
+    # Find run-lengths (how many samples each bit level persists)
+    runs = []
+    current_val = channel_samples[0]
+    run_len = 1
+    for i in range(1, len(channel_samples)):
+        if channel_samples[i] == current_val:
+            run_len += 1
+        else:
+            runs.append((current_val, run_len))
+            current_val = channel_samples[i]
+            run_len = 1
+    runs.append((current_val, run_len))
+
+    # Filter to realistic UART bit run lengths for any common baud (9600-230400+).
+    # At 9600: ~1250 samples @ 12MHz. At 115200: ~104 samples @ 12MHz.
+    # Use a fixed upper limit that covers the byte period at the lowest baud (9600).
+    # At 9600 @ 12MHz: 10 bits = 12500 samples. Use 20000 as fixed cap.
+    # Minimum: 50 samples (corresponds to ~240K baud @ 12MHz).
+    max_run = max(20000, int(sample_rate_hz / declared_baud * 12))
+    active_runs = [rl for _, rl in runs if 50 <= rl <= max_run]
+
+    if not active_runs:
+        return declared_baud, 0.0
+
+    # Strategy: use the MODE of runs that correspond to 1-bit periods.
+    # Single-bit runs fall in a narrow band: [min_run, min_run * 1.1].
+    # Consecutive bits (2×, 3×, ...) are in separate bands.
+    min_rl = min(active_runs)
+    upper_1bit = min_rl * 1.15  # 15% tolerance for 1-bit runs
+    single_bit_runs = [rl for rl in active_runs if rl <= upper_1bit]
+
+    if single_bit_runs:
+        # Mode of single-bit runs gives the most robust 1-bit period estimate
+        from collections import Counter
+        best_rl, _ = Counter(single_bit_runs).most_common(1)[0]
+    else:
+        # Fall back to minimum run length (works when consecutive bits dominate)
+        best_rl = min_rl
+
+    implied_baud = sample_rate_hz / best_rl
+    deviation_pct = (implied_baud - declared_baud) / declared_baud * 100
+
+    return implied_baud, deviation_pct
+
+
+# ─── Byte-to-Timing Mapping ───────────────────────────────────────
+def byte_timing_map(
+    sr_file: str,
+    channel: int = 0,
+    decoded_bytes: Optional[List[int]] = None,
+    channel_samples: Optional[List[int]] = None,
+    sample_rate_hz: int = 12_000_000,
+    baud: int = UART_BAUD,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> List[ByteTiming]:
+    """
+    Map timing faults to individual decoded bytes.
+
+    The decoder samples at specific sample indices. We find the sample index
+    range for each byte, then find which VCD edges fall in that range.
+
+    Args:
+        sr_file: Path to .sr capture file (for VCD export)
+        channel: Probe channel (0=D0, ...)
+        decoded_bytes: List of decoded byte values (from decoder)
+        channel_samples: List of raw 0/1 samples for the channel
+        sample_rate_hz: Sample rate in Hz
+        baud: UART baud rate
+        tolerance: Timing fault threshold
+
+    Returns:
+        List of ByteTiming objects, one per decoded byte.
+        ByteTiming.fault_count > 0 means that byte has timing warnings.
+    """
+    if decoded_bytes is None:
+        return []
+    if not decoded_bytes:
+        return []
+
+    # ── Get edges from VCD ───────────────────────────────────────
+    try:
+        vcd_text = export_vcd(sr_file, channel=channel)
+    except RuntimeError:
+        return []
+
+    parser = VCDEdgeParser()
+    channel_name = f'D{channel}'
+    edges = parser.parse_vcd_text(vcd_text, target_channel=channel_name)
+
+    if len(edges) < 2:
+        return []
+
+    # ── Map decoded bytes to sample index ranges ────────────────
+    # UART byte timing: 10 bits (1 start + 8 data + 1 stop) at given baud
+    # Each byte takes: 10 / baud seconds
+    bytes_per_sec = baud / 10  # bytes/sec
+    samples_per_byte = sample_rate_hz / bytes_per_sec  # ~1042 samples @ 12MHz, 115200 baud
+
+    # Find where each byte starts in the sample stream.
+    # We align by finding the first start bit (falling edge from idle=1 to start=0).
+    if channel_samples is None:
+        # Fall back: evenly distribute across the capture window
+        total_samples = edges[-1].timestamp_us * sample_rate_hz / 1_000_000
+        samples_per_byte = total_samples / max(len(decoded_bytes), 1)
+    else:
+        # Find first start bit (1→0 transition) in the samples
+        start_idx = None
+        for i in range(1, len(channel_samples)):
+            if channel_samples[i] == 0 and channel_samples[i - 1] == 1:
+                start_idx = i
+                break
+        if start_idx is None:
+            total_samples = edges[-1].timestamp_us * sample_rate_hz / 1_000_000
+            samples_per_byte = total_samples / max(len(decoded_bytes), 1)
+        else:
+            samples_per_byte = sample_rate_hz / bytes_per_sec
+
+    # ── Map VCD edges to byte indices ───────────────────────────
+    # VCD times are in microseconds. We build a timeline of edge times.
+    edge_times_us = [e.timestamp_us for e in edges]
+
+    result: List[ByteTiming] = []
+    samples_per_us = sample_rate_hz / 1_000_000
+
+    for byte_idx in range(len(decoded_bytes)):
+        # Sample range for this byte
+        if channel_samples is not None and start_idx is not None:
+            byte_start_sample = int(start_idx + byte_idx * samples_per_byte)
+            byte_end_sample = int(byte_start_sample + samples_per_byte)
+        else:
+            # Evenly spaced fallback
+            byte_start_sample = int(byte_idx * samples_per_byte)
+            byte_end_sample = int((byte_idx + 1) * samples_per_byte)
+
+        byte_start_us = byte_start_sample / samples_per_us
+        byte_end_us = byte_end_sample / samples_per_us
+
+        # Find edges within this byte's time window
+        byte_edges = [
+            (e.timestamp_us, e.value)
+            for e in edges
+            if byte_start_us <= e.timestamp_us < byte_end_us
+        ]
+
+        if not byte_edges:
+            result.append(ByteTiming(byte_index=byte_idx, fault_count=0, fault_pct=0.0))
+            continue
+
+        # Check each edge-to-edge interval for timing faults
+        faults_this_byte = []
+        worst_pct = 0.0
+
+        for i in range(len(byte_edges) - 1):
+            t1, v1 = byte_edges[i]
+            t2, v2 = byte_edges[i + 1]
+            dt_us = t2 - t1
+
+            ideal_us = 1_000_000.0 / baud
+            lo = ideal_us * (1 - tolerance)
+            hi = ideal_us * (1 + tolerance)
+            gap_threshold = ideal_us * 1.5
+            byte_time = ideal_us * 10
+
+            if dt_us > byte_time:
+                continue  # idle gap, skip
+
+            if dt_us > gap_threshold:
+                num_bits = dt_us / ideal_us
+                nearest = round(num_bits)
+                deviation = abs(dt_us - nearest * ideal_us)
+                if deviation > tolerance * ideal_us:
+                    pct = deviation / ideal_us * 100
+                    faults_this_byte.append(pct)
+                    if pct > worst_pct:
+                        worst_pct = pct
+            elif not (lo <= dt_us <= hi):
+                pct = abs(dt_us - ideal_us) / ideal_us * 100
+                faults_this_byte.append(pct)
+                if pct > worst_pct:
+                    worst_pct = pct
+
+        result.append(ByteTiming(
+            byte_index=byte_idx,
+            fault_count=len(faults_this_byte),
+            fault_pct=round(worst_pct, 2),
+            faulty_bits=[],
+        ))
+
+    return result
 
 
 # ─── CLI ───────────────────────────────────────────────────────────

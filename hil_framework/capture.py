@@ -68,8 +68,12 @@ class LogicAnalyzerCapture:
             raise RuntimeError("sigrok-cli not found. Install: apt install sigrok sigrok-cli")
         self._temp_dir = tempfile.mkdtemp(prefix='hil_capture_')
         self._last_capture: Optional[CaptureResult] = None
+        self._sr_filepath = ''    # persisted path — survives __del__ cleanup
+        self._cleanup_ok = False  # suppress __del__ once we copy to /tmp
 
     def __del__(self):
+        if hasattr(self, '_cleanup_ok') and self._cleanup_ok:
+            return  # /tmp copy is the canonical path now
         if hasattr(self, '_temp_dir') and os.path.exists(self._temp_dir):
             shutil.rmtree(self._temp_dir, ignore_errors=True)
 
@@ -265,6 +269,8 @@ class LogicAnalyzerCapture:
         # Extract and parse the .sr ZIP file
         channel_samples = self._extract_channels(output_file, rate_hz, channel)
 
+        self._sr_filepath = output_file  # persist path before temp dir cleanup
+
         self._last_capture = CaptureResult(
             success=True,
             filepath=output_file,
@@ -398,6 +404,15 @@ def quick_capture(
     if not result.success:
         return {'success': False, 'error': result.error}
 
+    # Persist the .sr filepath to a stable location before temp dir cleanup.
+    # The capture object's __del__ will wipe _temp_dir, so we copy to /tmp.
+    sr_filepath = ''
+    if result.filepath:
+        # Keep the original path and suppress cleanup so it stays valid.
+        # _cleanup_ok on the cap object prevents __del__ from removing the temp dir.
+        sr_filepath = result.filepath
+        cap._cleanup_ok = True
+
     # Check for activity
     active_channels = []
     for ch, samples in result.channel_samples.items():
@@ -436,4 +451,6 @@ def quick_capture(
         'channel_info': active_channels,
         'sample_rate_hz': result.sample_rate_hz,
         'duration_s': result.duration_s,
+        'channel_samples': result.channel_samples.get(channel, []),
+        'sr_filepath': sr_filepath,
     }

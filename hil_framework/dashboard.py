@@ -24,10 +24,12 @@ try:
     from hil_framework.capture import quick_capture
     from hil_framework.decoder import UARTDecoder
     from hil_framework.validator import TestValidator
+    from hil_framework.timing import estimate_baud_from_samples, byte_timing_map, TimingReport
 except ImportError:
     from capture import quick_capture
     from decoder import UARTDecoder
     from validator import TestValidator
+    from timing import estimate_baud_from_samples, byte_timing_map, TimingReport
 
 # ─── ANSI Escape Codes ───────────────────────────────────────────
 RST = '\033[0m'
@@ -122,6 +124,35 @@ def waveform_bar(bval, width=16):
     return s[:width].ljust(width)
 
 
+def waveform_colored(bval, timing_info=None, col_fn=None):
+    """
+    Build waveform string with per-character ANSI coloring.
+    timing_info: ByteTiming object (or None)
+    col_fn: base color function to apply to healthy bits
+    If timing_info has faults, the relevant bits turn red.
+    Returns: tuple (waveform_str, has_fault)
+    """
+    bits = [(bval >> i) & 1 for i in range(8)]
+    lo_char = '_'
+    hi_char = '▄'
+
+    if timing_info is not None and timing_info.fault_count > 0:
+        has_fault = True
+        waveform = RED + lo_char  # start bit red
+        for b in bits:
+            waveform += RED + (hi_char if b else lo_char)
+        waveform += RED + lo_char + RST  # stop bit red
+    else:
+        has_fault = False
+        base = col_fn(lo_char) if col_fn else lo_char
+        waveform = base
+        for b in bits:
+            ch = col_fn(hi_char) if col_fn else hi_char
+            waveform += ch
+        waveform += base
+    return waveform, has_fault
+
+
 def byte_color(bval):
     """Color function based on byte category."""
     if bval == 0x55:
@@ -205,17 +236,32 @@ def draw(width=80):
     print(V + H * 32 + MID_H + H * 46 + V)
 
 
-def draw_patterns(bytes_data, width=80):
-    """Draw the recent decoded patterns."""
+def draw_patterns(bytes_data, timing_map=None, baud_mismatch_pct=0.0, width=80):
+    """Draw the recent decoded patterns with timing awareness."""
     print(V + H * 32 + MID_H + H * 46 + V)
     header = '  RECENTLY DECODED PATTERNS '
+    if timing_map:
+        warn_count = sum(1 for bt in timing_map if bt.fault_count > 0)
+        if warn_count > 0:
+            header += '  ' + red(f'[{warn_count} TIMING WARN]')
+    if abs(baud_mismatch_pct) > 2.0:
+        header += '  ' + red('[BAUD MISMATCH]')
     print(box_line(bold(header), width))
 
     step = len(bytes_data)
     for b in reversed(bytes_data[-30:]):
         step -= 1
         col_fn = byte_color(b)
-        wf = col_fn(waveform_bar(b, 14))
+
+        # Get timing info for this byte if available
+        has_fault = False
+        if timing_map:
+            byte_idx = len(bytes_data) - 1 - step
+            timing_info = timing_map[byte_idx] if byte_idx < len(timing_map) else None
+            wf_plain, has_fault = waveform_colored(b, timing_info=timing_info, col_fn=col_fn)
+        else:
+            wf_plain = col_fn(waveform_bar(b, 14))
+
         pat = col_fn(f"[0x{b:02X}]")
         hx = col_fn(fmt_hex(b)).ljust(6)
         bn = col_fn(fmt_bin(b)).ljust(10)
@@ -230,7 +276,10 @@ def draw_patterns(bytes_data, width=80):
         else:
             st = cyan(st)
 
-        inner = f"  {pat}  {hx}  {bn}  {ch}  {wf}  {st}  "
+        # Timing warning badge
+        warn_str = red(' [TIMING WARN]') if has_fault else ''
+
+        inner = f"  {pat}  {hx}  {bn}  {ch}  {wf_plain}  {st}{warn_str}  "
         print(box_line(inner, width))
 
     print(V + H * 32 + MID_H + H * 46 + V)
@@ -252,12 +301,23 @@ def draw_histogram(bytes_data, width=80):
     print(box_bottom(width))
 
 
-def draw_footer(width=80, status='', total_bytes=0, elapsed=0.0):
-    """Draw footer with status."""
+def draw_footer(width=80, status='', total_bytes=0, elapsed=0.0, timing_map=None, baud_mismatch_pct=0.0, implied_baud=115200):
+    """Draw footer with status and timing info."""
     print(box_bar(width))
     elapsed_str = f"{elapsed:.1f}s"
     footer = f"  {green('● LIVE')}  |  {cyan(f'Decoded: {total_bytes} bytes')}  |  {yellow(f'{elapsed_str}')}"
     print(box_line(footer, width))
+
+    if timing_map or abs(baud_mismatch_pct) > 2.0:
+        warn_count = sum(1 for bt in timing_map if bt.fault_count > 0) if timing_map else 0
+        if warn_count > 0:
+            timing_line = f"  {red('● TIMING WARN')}: {warn_count}/{len(timing_map)} bytes out of tolerance"
+        elif abs(baud_mismatch_pct) > 2.0:
+            timing_line = f"  {red('● BAUD MISMATCH')}: ~{int(implied_baud)} baud vs 115200 declared"
+        else:
+            timing_line = f"  {green('● TIMING OK')}: all {len(timing_map)} bytes within 5% tolerance"
+        print(box_line(timing_line, width))
+
     print(box_bottom(width))
 
 
@@ -278,17 +338,50 @@ def main_la(duration=3.0, channel=1, width=80):
     decoded = result['raw_bytes']
     text = result['text']
 
+    # ── Get timing map and baud mismatch detection ─────────────────
+    timing_map = []
+    baud_mismatch_pct = 0.0
+    implied_baud = 115200
+    if result.get('channel_samples') is not None:
+        # Use sample-based baud estimation (no VCD needed)
+        implied_baud, baud_mismatch_pct = estimate_baud_from_samples(
+            result['channel_samples'],
+            result.get('sample_rate_hz', 12_000_000),
+            declared_baud=115200,
+        )
+        if result.get('sr_filepath'):
+            timing_map = byte_timing_map(
+                sr_file=result['sr_filepath'],
+                channel=channel,
+                decoded_bytes=decoded,
+                channel_samples=result['channel_samples'],
+                sample_rate_hz=result.get('sample_rate_hz', 12_000_000),
+                baud=115200,
+                tolerance=0.05,
+            )
+
     # ── Draw Dashboard ─────────────────────────────────────────
     clear()
     print(box_bar(width))
     print(V + '  ' + bold(magenta('LOGIC ANALYZER - LIVE DASHBOARD'.center(width - 4))))
     print(V + H * (width - 2) + V)
     print(box_line(f"  {cyan('Saleae Logic')} @ 12MHz   |   {cyan('115200 8N1')}   |   {cyan(f'CH{channel} = PD8 (USART3 TX)')}", width))
+
+    # Timing summary row
+    if timing_map or abs(baud_mismatch_pct) > 2.0:
+        warn_count = sum(1 for bt in timing_map if bt.fault_count > 0) if timing_map else 0
+        if warn_count > 0:
+            timing_row = f"  {red('● TIMING ISSUES')}: {warn_count}/{len(timing_map)} bytes faulted"
+        elif abs(baud_mismatch_pct) > 2.0:
+            timing_row = f"  {red('● BAUD MISMATCH')}: signal ~{int(implied_baud)} baud vs 115200 declared"
+        else:
+            timing_row = f"  {green('● TIMING OK')}: {len(timing_map)}/{len(timing_map)} bytes healthy"
+        print(box_line(timing_row, width))
     print(box_bar(width))
 
-    draw_patterns(decoded, width)
+    draw_patterns(decoded, timing_map=timing_map, baud_mismatch_pct=baud_mismatch_pct, width=width)
     draw_histogram(decoded, width)
-    draw_footer(width, status='LIVE', total_bytes=len(decoded), elapsed=elapsed)
+    draw_footer(width, status='LIVE', total_bytes=len(decoded), elapsed=elapsed, timing_map=timing_map, baud_mismatch_pct=baud_mismatch_pct, implied_baud=implied_baud)
 
     # ── Validate ────────────────────────────────────────────────
     print()

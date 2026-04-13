@@ -1091,6 +1091,14 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /* USART1 GPIO Init: PA9=TX, PA10=RX, AF7 (VCP) */
+  GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
