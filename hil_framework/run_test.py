@@ -25,6 +25,10 @@ from validator import TestValidator
 from hardware import BoardHardware
 from timing import analyze_timing
 
+def r(s): return f"\033[31m{s}\033[0m"
+def g(s): return f"\033[32m{s}\033[0m"
+def y(s): return f"\033[33m{s}\033[0m"
+
 
 def main():
     parser = argparse.ArgumentParser(description='HIL Test Runner')
@@ -83,32 +87,35 @@ def main():
     dev_idx = args.device
     if dev_idx is None:
         for i, d in enumerate(devices):
+            print(f"    [{i}] {d.name} ({d.driver})")
+        for i, d in enumerate(devices):
             if 'demo' not in d.driver.lower():
                 dev_idx = i
                 break
         if dev_idx is None:
             dev_idx = 0
+            print(f"    WARNING: No real device found, falling back to demo")
 
     dev = devices[dev_idx]
     print(f"    Device: {dev.name} ({dev.driver})")
     print(f"    Max rate: {dev.max_sample_rate_hz / 1e6:.0f}MHz")
 
     print(f"    Capturing...")
-    result = cap.capture(
+    cap_result = cap.capture(
         duration_s=args.duration,
         sample_rate=args.rate,
         channel=args.channel,
         use_device=dev_idx,
     )
 
-    if not result.success:
-        print(f"    ERROR: {result.error}")
+    if not cap_result.success:
+        print(f"    ERROR: {cap_result.error}")
         sys.exit(1)
 
     # Step 3: Analyze channel activity
     print(f"\n[3] Channel Analysis")
     active_channels = []
-    for ch, samples in result.channel_samples.items():
+    for ch, samples in cap_result.channel_samples.items():
         transitions = sum(1 for i in range(1, len(samples)) if samples[i] != samples[i-1])
         active_channels.append((ch, transitions, len(samples)))
         if transitions > 0:
@@ -118,13 +125,13 @@ def main():
     print(f"\n[4] UART Decode @ {args.baud} baud")
 
     decoded_all = {}
-    for ch, samples in result.channel_samples.items():
+    for ch, samples in cap_result.channel_samples.items():
         transitions = sum(1 for i in range(1, len(samples)) if samples[i] != samples[i-1])
         if transitions > 10:
             decoder = UARTDecoder(baud=args.baud)
-            decoded = decoder.decode_bytes(samples, result.sample_rate_hz)
+            decoded = decoder.decode_bytes(samples, cap_result.sample_rate_hz)
             decoded_all[ch] = decoded
-            text = decoder.decode_text(samples, result.sample_rate_hz, max_chars=100)
+            text = decoder.decode_text(samples, cap_result.sample_rate_hz, max_chars=100)
             print(f"    D{ch}: {len(decoded)} bytes decoded")
             if not args.quick:
                 print(f"    Text: {text[:80]}")
@@ -136,7 +143,7 @@ def main():
     # Primary channel
     primary = decoded_all.get(args.channel, list(decoded_all.values())[0])
     decoder = UARTDecoder(baud=args.baud)
-    text = decoder.decode_text(primary, result.sample_rate_hz, max_chars=200)
+    text = decoder.decode_text(primary, cap_result.sample_rate_hz, max_chars=200)
 
     # Step 5: Validate
     print(f"\n[5] Validation")
@@ -164,16 +171,16 @@ def main():
 
     # Summary
     print(f"\n  HIL Result: {'PASS' if result.passed else 'FAIL'}")
-    print(f"  Channel: D{args.channel} @ {result.sample_rate_hz/1e6:.0f}MHz")
+    print(f"  Channel: D{args.channel} @ {args.rate} sample rate")
     print(f"  Decoded: {len(primary)} bytes")
 
     # Step 6: Hardware Timing Analysis
-    if result.filepath and os.path.exists(result.filepath):
+    if cap_result.filepath and os.path.exists(cap_result.filepath):
         print(f"\n[6] Hardware Timing Analysis")
-        print(f"    Analyzing: {os.path.basename(result.filepath)}")
+        print(f"    Analyzing: {os.path.basename(cap_result.filepath)}")
         print(f"    Channel: D{args.channel} @ {args.baud} baud")
         faults, timing_report = analyze_timing(
-            sr_file=result.filepath,
+            sr_file=cap_result.filepath,
             channel=args.channel,
             baud=args.baud,
             tolerance=0.05,

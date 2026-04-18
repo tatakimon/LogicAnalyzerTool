@@ -1,0 +1,9 @@
+# Verified Binary Checksums
+
+## v0.1.0 (2026-04-18)
+Binary: hil_workspace/Debug/Logic_Analyzer_USART3.bin
+MD5: 7a69e289377517b4682bd682b92372b2
+Size: 60980 bytes (60.9 KB)
+SHA256: (run: sha256sum hil_workspace/Debug/Logic_Analyzer_USART3.bin)
+Board: B-U585I-IOT02A
+Result: PASS — AX=-94 AY=-34 AZ=-981 mg, 0 timing faults

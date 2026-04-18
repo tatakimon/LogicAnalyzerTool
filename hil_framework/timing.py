@@ -455,11 +455,11 @@ def render_timing_sparkline(
             # Multi-bit interval — show as a bold repeat
             char = m('═') if not pulse.faults else r('═')
         elif abs(deviation) < 0.02:
-            char = g('│')
+            char = g('▌')
         elif abs(deviation) < 0.05:
-            char = y('│')
+            char = y('▌')
         else:
-            char = c('│')
+            char = c('▌')
 
         for _ in range(num_chars):
             line += char
@@ -662,8 +662,8 @@ def analyze_timing(
 
         # ── Step 7: Sparkline ────────────────────────────────────
         if report.pulses:
-            print(f"  {b('║')}  {b('Bit width sparkline:')}  "
-                  f"{g('│')}=1-bit ideal  {m('═')}=multi-bit  {r('X')}=fault  {c('│')}=ok")
+            print(f"  {b('║')}  {b('Bit width over time:')}  "
+                  f"{g('▌')}=1-bit (8.68us)  {m('═')}=multi-bit (17us+)  {r('X')}=fault (outside 5%)")
             for sl in render_timing_sparkline(report.pulses, max_pulses=200, width=76, ideal_us=ideal_us, tolerance=tolerance):
                 print(f"  {b('║')}  {sl}")
             print(f"  {b('╠' + '─' * 78 + '╣')}")

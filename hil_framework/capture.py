@@ -190,36 +190,28 @@ class LogicAnalyzerCapture:
         Returns:
             CaptureResult with channel_samples dict {channel: [0/1 samples]}
         """
-        # Re-scan to ensure device list is current
-        self.list_devices()
-
-        if not self._devices:
-            return CaptureResult(
-                success=False,
-                filepath='',
-                duration_s=0,
-                sample_rate_hz=0,
-                channel_samples={},
-                error="No logic analyzer devices found",
-            )
-
-        # Select device - clamp to valid range
-        if use_device is None:
-            use_device = 0
-        use_device = max(0, min(use_device, len(self._devices) - 1))
-        dev = self._devices[use_device]
-        conn_str = f"{dev.driver}:conn={dev.connection}" if dev.connection else dev.driver
+        # NOTE: list_devices() must NOT be called here — it triggers a USB claim that
+        # races with the capture claim and causes "Unable to claim USB interface" errors.
+        # Use cached _devices or fall back to a known-good hardcoded connection string.
+        if self._devices:
+            use_device = use_device if use_device is not None else 0
+            use_device = max(0, min(use_device, len(self._devices) - 1))
+            dev = self._devices[use_device]
+            conn_str = f"{dev.driver}:conn={dev.connection}" if dev.connection else dev.driver
+        else:
+            # Hardcoded fallback — Saleae conn=1.4 observed in WSL2 USB passthrough
+            conn_str = "fx2lafw:conn=1.4"
 
         # Determine sample rate
         rate_hz = sample_rate_hz
         if rate_hz is None and sample_rate:
             rate_hz = self.SALEAE_RATES.get(sample_rate.upper(), 12_000_000)
         elif rate_hz is None:
-            rate_hz = dev.max_sample_rate_hz
+            rate_hz = 12_000_000  # safe default for Saleae
 
-        # Clamp to available rates
-        if rate_hz not in dev.available_rates:
-            rate_hz = self.best_sample_rate(rate_hz)
+        # Clamp to known Saleae rates
+        if rate_hz not in self.SALEAE_RATES.values():
+            rate_hz = self.SALEAE_RATES.get(sample_rate.upper(), 12_000_000) if sample_rate else 12_000_000
 
         # Output file
         output_file = os.path.join(self._temp_dir, 'capture.sr')
@@ -235,9 +227,23 @@ class LogicAnalyzerCapture:
             '-o', output_file,
         ]
 
+        # Demo device: cap at ~500K samples to avoid timeout (sigrok-cli demo is slow above that)
+        if 'demo' in conn_str.lower():
+            demo_samples = 500_000
+            cmd = [
+                'sigrok-cli',
+                '-d', conn_str,
+                '-c', f'samplerate={rate_hz}',
+                '--samples', str(demo_samples),
+                '-o', output_file,
+            ]
+            timeout_val = 15  # demo device with 500K samples takes ~5-8s
+        else:
+            timeout_val = int(duration_s) + 10
+
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=int(duration_s) + 10
+                cmd, capture_output=True, text=True, timeout=timeout_val
             )
             if result.returncode != 0:
                 return CaptureResult(
@@ -313,7 +319,7 @@ class LogicAnalyzerCapture:
         # Find all logic files
         logic_files = sorted(
             [f for f in os.listdir(extract_dir) if f.startswith('logic-')],
-            key=lambda x: int(x.split('-')[-1])
+            key=lambda x: int(x.rsplit('-', 1)[-1])
         )
 
         if not logic_files:
@@ -377,28 +383,10 @@ def quick_capture(
     print(f"[HIL] Starting capture: {duration_s}s @ {sample_rate}, channel D{channel}")
 
     cap = LogicAnalyzerCapture()
-    devices = cap.list_devices()
-
-    if not devices:
-        return {'success': False, 'error': 'No devices found'}
-
-    # Pick first non-demo device if available
-    dev_idx = None
-    for i, d in enumerate(devices):
-        if 'demo' not in d.driver.lower():
-            dev_idx = i
-            break
-    if dev_idx is None:
-        dev_idx = 0
-
-    print(f"[HIL] Using device: {devices[dev_idx].name} @ {sample_rate}")
-    print(f"[HIL] Channels: {', '.join(devices[dev_idx].channels)}")
-
     result = cap.capture(
         duration_s=duration_s,
         sample_rate=sample_rate,
         channel=channel,
-        use_device=dev_idx,
     )
 
     if not result.success:
@@ -421,6 +409,21 @@ def quick_capture(
 
     print(f"[HIL] Channel activity: {[(f'D{ch}', t) for ch, t in active_channels]}")
 
+    # Auto-detect baud from samples before decoding
+    try:
+        from timing import estimate_baud_from_samples
+        target_samples = next(iter(result.channel_samples.values()), [])
+        if len(target_samples) > 100:
+            implied_baud, dev_pct = estimate_baud_from_samples(
+                target_samples, result.sample_rate_hz, baud
+            )
+            # Use implied baud if deviation is significant (> 1%)
+            if abs(dev_pct) > 1.0:
+                baud = round(implied_baud)
+                print(f"[HIL] Baud auto-detected: {baud} ({dev_pct:+.1f}% vs nominal {baud})")
+    except Exception:
+        pass  # Fall back to nominal baud
+
     # Decode UART
     decoder = UARTDecoder(baud=baud)
     all_decoded = {}  # channel -> list of DecodedFrame
@@ -431,7 +434,7 @@ def quick_capture(
             frames = decoder.decode_stream(samples, result.sample_rate_hz)
             all_decoded[ch] = frames
             all_bytes[ch] = [f.byte_value for f in frames]
-            print(f"[HIL] D{ch}: {len(frames)} bytes decoded")
+            print(f"[HIL] D{ch}: {len(frames)} bytes decoded at {baud} baud")
 
     # Build result
     primary_frames = all_decoded.get(channel, [])
@@ -453,4 +456,5 @@ def quick_capture(
         'duration_s': result.duration_s,
         'channel_samples': result.channel_samples.get(channel, []),
         'sr_filepath': sr_filepath,
+        'baud_detected': baud,
     }
