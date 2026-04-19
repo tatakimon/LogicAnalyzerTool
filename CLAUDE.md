@@ -166,28 +166,40 @@ if ((HAL_GetTick() - last_tick) >= desired_interval_ms) {
 ## 6. Autonomous HIL Workflow — Standard Response to Sensor Prompts
 
 When the user says "accelerometer", "temperature", "sensor data", or similar:
-**do NOT start from scratch.** Run the autonomous loop.
+**do NOT start from scratch.** Run the two-step loop.
 
-### The `auto_hil.py` Script
+### Two-Command Loop
 ```bash
-python3 hil_framework/auto_hil.py --scenario accel_stream   # accelerometer
-python3 hil_framework/auto_hil.py --scenario temperature      # temperature sensor
+# Step 1: Apply scenario code + build (do this once per scenario)
+python3 hil_framework/switch_scenario.py accel_stream
+python3 hil_framework/switch_scenario.py temperature
+
+# Step 2: Flash + HIL verification (run with Windows 2 and 3 open)
+python3 hil_framework/auto_hil.py --scenario accel_stream
+python3 hil_framework/auto_hil.py --scenario temperature
 ```
 
-### What It Does (automatically, in order)
+### What Each Step Does
+
+**`switch_scenario.py`** — applies saved USER CODE blocks to `hil_workspace/Core/Src/main.c` and builds:
+1. Read `scenarios/<name>/USER_CODE_PV.c`, `_INIT.c`, `_LOOP.c`
+2. Inject into the matching `/* USER CODE BEGIN/END */` blocks in main.c
+3. Run `make -C hil_workspace/Debug all`
+4. Exit with binary ready at `hil_workspace/Debug/Logic_Analyzer_USART3.bin`
+
+**`auto_hil.py`** — full HIL verification pipeline:
 1. **Detect** — Saleae + VCP present → abort if not
-2. **Build** — compile firmware from current `hil_workspace/`
-3. **Flash** — erase + write to 0x08000000
-4. **Stage 1** — logic analyzer capture → timing analysis → **must pass < 5% deviation**
-5. **Stage 2** — first VCP reading → print to Pane 3
-6. **Physical test** — ask user to tilt (accel) or cover (temp) → confirm Y/N
-7. **Save result** — `/tmp/hil_verification_result.txt`
+2. **Flash** — erase + write with retry loop (WSL2 USB passthrough resilient)
+3. **Stage 1** — logic analyzer capture → timing analysis → **must pass < 5% deviation**
+4. **Stage 2** — VCP stream confirmation
+5. **Physical test** — ask user to tilt (accel) or cover (temp)
+6. **Save result** — `/tmp/hil_verification_result.txt`
 
 ### Scenario Detection (what triggers it)
 | User prompt | Scenario | Physical verification |
 |------------|----------|---------------------|
 | "accelerometer", "tilt", "X Y Z", "ISM330DHCX" | `accel_stream` | Tilt board — X/Y swing |
-| "temperature", "STTS22H", "temp sensor" | `temperature` | Cover sensor — TEMP changes |
+| "temperature", "HTS221", "temp sensor" | `temperature` | Cover sensor — TEMP rises |
 | "UART data", "stream", "115200" | `accel_stream` | Default to accel if running |
 
 ### If no scenario matches
@@ -195,11 +207,6 @@ Follow the full HIL Loop (Section 3): research → inject USER CODE → build �
 
 ### Scenarios Directory
 ```
-hil_framework/scenarios/
-  accel_stream/     — ISM330DHCX live axes (verified 2026-04-18)
-  temperature/      — STTS22H temperature stream (pending)
-```
-
 ---
 
 ## 7. Verified Scenarios — Save Working Code as Base
@@ -237,10 +244,13 @@ Before starting a new sensor integration, **check `hil_framework/LESSONS_LEARNED
 
 Key rules for B-U585I-IOT02A:
 - `ISM330DHCX_Init()` leaves accel in power-down — must call `BSP_MOTION_SENSOR_Enable()` after
+- `BSP_ENV_SENSOR_Init()` also requires `BSP_ENV_SENSOR_Enable()` — not just Init alone
+- newlib-nano `%f` in `snprintf()` outputs nothing — use integer math formatting instead
 - Demo sigrok device doesn't support `--time` — use `--samples` instead
 - Saleae `conn=` string changes on USB reconnect — always re-run `sigrok-cli --scan`
 - VCP output files live in `hil_framework/` — use full path in `tail -f`
 - UART: always use `snprintf()` + tracked length, never bare `strlen()` on unterminated buffers
+- WSL2 USB passthrough drops SWD debug after mass erase — use retry loop for write
 
 ---
 
@@ -250,7 +260,8 @@ All scripts live in `hil_framework/` and are called via **native Bash** — neve
 
 | Script | Purpose | Stdout target |
 |--------|---------|---------------|
-| `auto_hil.py` | **Autonomous HIL loop** — build, flash, timing, VCP, physical test, result | `.pane2_output` + `.pane3_output` |
+| `switch_scenario.py` | Apply scenario USER CODE blocks to main.c + build | stdout |
+| `auto_hil.py` | **Autonomous HIL loop** — flash (with retry), timing, VCP, physical test | `.pane2_output` + `.pane3_output` |
 | `run_test.py` | Full capture + decode + timing report | `.pane2_output` |
 | `capture.py` | Saleae sigrok-cli capture wrapper | `.pane2_output` |
 | `timing.py` | VCD-based per-byte timing analysis | `.pane2_output` |

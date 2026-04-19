@@ -124,3 +124,26 @@ Or `cd` to `hil_framework/` before running `tail -f .pane2_output`.
 ---
 
 *Last updated: 2026-04-18*
+
+---
+
+### newlib-nano: %f Printf Float Formatting Produces Empty Output
+
+**Symptom:** `snprintf(tx_buf, SIZE, "TEMP=%.2f\r\n", temperature)` outputs `TEMP=\r\n` with no value.
+
+**Root Cause:** newlib-nano (the C library for ARM Cortex-M) does not include floating-point printf support by default. The format string is parsed but `%f` outputs nothing.
+
+**Fix option A (best):** Use integer math — avoid `%f` entirely:
+```c
+int int_part = (int)temperature;
+int frac_part = (int)((temperature - int_part) * 100.0f);
+if (frac_part < 0) frac_part = -frac_part;
+snprintf(tx_buf, TX_BUF_SIZE, "TEMP=%d.%02d\r\n", int_part, frac_part);
+```
+
+**Fix option B:** Link with `-u _printf_float` to force float support (increases binary size):
+```
+LDFLAGS += -u _printf_float
+```
+
+**When to check:** Any time printing a `float` or `double` from a sensor.

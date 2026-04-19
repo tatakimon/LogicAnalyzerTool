@@ -23,6 +23,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="VCP Serial Feed — tail-friendly live UART stream")
     parser.add_argument("--port", default="/dev/ttyACM0", help="Serial port (default: /dev/ttyACM0)")
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default: 115200)")
+    parser.add_argument("--output", default=None,
+                        help="Write stream to file instead of stdout (for Pane 3)")
     args = parser.parse_args()
 
     try:
@@ -32,7 +34,9 @@ def main() -> None:
         sys.stderr.write(f"[vcp_feed] ERROR: Cannot open {args.port}: {e}\n")
         sys.exit(1)
 
-    sys.stderr.write(f"[vcp_feed] Streaming {args.port} @ {args.baud} baud... (kill with Ctrl+C)\n")
+    out = open(args.output, "w") if args.output else sys.stdout
+    sys.stderr.write(f"[vcp_feed] Streaming {args.port} @ {args.baud} baud..."
+                     f" (kill with Ctrl+C)\n")
     sys.stderr.flush()
 
     try:
@@ -43,14 +47,16 @@ def main() -> None:
                     line = line_bytes.decode("utf-8", errors="replace").strip()
                     if line:
                         ts = time.strftime("%H:%M:%S")
-                        sys.stdout.write(f"[{ts}] {line}\n")
-                        sys.stdout.flush()
+                        out.write(f"[{ts}] {line}\n")
+                        out.flush()
             else:
                 time.sleep(0.05)
     except KeyboardInterrupt:
         sys.stderr.write("\n[vcp_feed] Stopped.\n")
     finally:
         ser.close()
+        if args.output:
+            out.close()
 
 
 if __name__ == "__main__":

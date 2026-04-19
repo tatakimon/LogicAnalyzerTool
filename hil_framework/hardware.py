@@ -306,4 +306,19 @@ def flash_and_verify(
         if missing:
             return True, f"Flash OK, patterns missing: {missing}\nOutput: {text}", lines
 
-    return True, f"Flash OK, VCP output received\n{text}", lines
+if __name__ == '__main__':
+    import glob
+    print("=== Hardware Detection ===")
+
+    # STLink / VCP
+    for port in sorted(glob.glob('/dev/ttyACM*')) + sorted(glob.glob('/dev/ttyUSB*')):
+        print(f"  [VCP] {port}")
+
+    # Saleae
+    import subprocess
+    res = subprocess.run(['sigrok-cli', '--scan'], capture_output=True, text=True)
+    for line in (res.stdout + res.stderr).splitlines():
+        if 'fx2lafw' in line or 'saleae' in line.lower():
+            print(f"  [Logic] {line.strip()}")
+
+    print("=== Done ===")

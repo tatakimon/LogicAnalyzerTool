@@ -53,3 +53,20 @@
 - CH1 = PD9 (USART3_RX) — active channel
 - Sparkline legend improved: ▌=1-bit, ═=multi-bit, X=fault
 - Firmware: ISM330DHCX with BSP_MOTION_SENSOR_Enable() fix
+
+---
+
+## 2026-04-18 — HTS221 Temperature Sensor via UART
+**Board:** B-U585I-IOT02A  |  **Saleae:** fx2lafw:conn=1.14  |  **VCP:** /dev/ttyACM0
+**Goal:** Stream live temperature from HTS221 over USART3 + USART1
+**Stage 1:** CH1 (PD9), 74 pulses, 153 edges, 0 timing faults, PASS
+**Stage 2:** TEMP=30.24–30.34 °C — live, sensor drifting naturally
+**Physical Test:** User covers/blows on HTS221 → TEMP rises
+**Outcome:** PASS
+**Notes:**
+- First build with %f format → `TEMP=\r` (no value) — newlib-nano needs `-u _printf_float`
+- Fix: integer math formatting `TEMP=%d.%02d\r\n`
+- BSP init pattern: `BSP_ENV_SENSOR_Init()` + `BSP_ENV_SENSOR_Enable()` (not just Init)
+- Makefile: added `b_u585i_iot02a_env_sensors`, `hts221 hts221_reg lps22hh lps22hh_reg`
+- Binary MD5: `5551ffd75158035abc37b49f25fc6192`
+- Scenario saved to `scenarios/temperature/`
